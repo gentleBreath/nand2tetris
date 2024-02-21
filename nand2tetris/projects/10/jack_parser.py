@@ -193,26 +193,31 @@ class JackLexer:
             self.reader.close()
 
 
-class JackParser:
-    def __init__(self, output_filename, source_filenames: list) -> None:
+class JackCompiler:
+    def __init__(self, source_filenames: list) -> None:
         for _filename in source_filenames:
             assert os.path.basename(_filename)[-4:] == 'jack'
         self.source_filenames = source_filenames
-        self.output_filename = output_filename
 
         self.tokens = []
         self.index = -1
         self.current_token = None
 
-        self.output_file_obj = open(self.output_filename, 'w')
+        self.output_file_obj = None
 
         self.indent_content = '\t'
         self.indent_level = 0
 
-    def parse(self):
+    def run(self):
         try:
             for _filename in self.source_filenames:
+                print("===")
                 print("当前解析文件为：", _filename)
+
+                output_filename = _filename[:-4]+'vm'
+                print("输出文件名为：", output_filename)
+
+                self.output_file_obj = open(output_filename, 'w')
                 lexer = JackLexer(_filename)
                 lexer.tokenize()
                 self.tokens = lexer.tokens
@@ -220,7 +225,12 @@ class JackParser:
                 self.current_token = None
                 # 入口
                 while self.index < len(self.tokens):
-                    self.parse_class()
+                    self.compile_class()
+                print("===")
+
+                if self.output_file_obj is not None:
+                    self.output_file_obj.close()
+                self.output_file_obj = None
         finally:
             if self.output_file_obj is not None:
                 self.output_file_obj.close()
@@ -269,7 +279,7 @@ class JackParser:
         self.output_file_obj.write('\n')
 
     # classDec -> 'class' identifier '{' classVarDec* subroutineDec* '}'
-    def parse_class(self):
+    def compile_class(self):
         token = self.expect('keyword', ['class'])
 
         self.write_to_xml(NonTerminal('class', True).form)
@@ -284,10 +294,10 @@ class JackParser:
         self.write_to_xml(token.form)
 
         while self.next_token() is not None and self.next_token().value in ['static', 'field']:
-            self.parse_class_var_desc()
+            self.compile_class_var_desc()
 
         while self.next_token() is not None and self.next_token().value in ['constructor', 'function', 'method']:
-            self.parse_subroutine_desc()
+            self.compile_subroutine_desc()
 
         token = self.expect('symbol', ['}'])
         self.write_to_xml(token.form)
@@ -296,7 +306,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('class', False).form)
 
     # classVarDec -> ('static'|'filed') type identifier (',' identifier)* ';'
-    def parse_class_var_desc(self):
+    def compile_class_var_desc(self):
         token = self.expect('keyword', ['static', 'field'])
 
         self.write_to_xml(NonTerminal('classVarDec', True).form)
@@ -335,7 +345,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('classVarDec', False).form)
 
     # subroutineDec -> ('constructor'|'function'|'method') ('void'|type) identifier '(' parameterList ')' subroutineBody
-    def parse_subroutine_desc(self):
+    def compile_subroutine_desc(self):
         token = self.expect('keyword', ['constructor', 'function', 'method'])
 
         self.write_to_xml(NonTerminal('subroutineDec', True).form)
@@ -362,18 +372,18 @@ class JackParser:
         token = self.expect('symbol', ['('])
         self.write_to_xml(token.form)
 
-        self.parse_parameter_list()
+        self.compile_parameter_list()
 
         token = self.expect('symbol', [')'])
         self.write_to_xml(token.form)
 
-        self.parse_subroutine_body()
+        self.compile_subroutine_body()
 
         self.indent_level -= 1
         self.write_to_xml(NonTerminal('subroutineDec', False).form)
 
     # parameterList -> ((type identifier) (',' type identifier)*)?
-    def parse_parameter_list(self):
+    def compile_parameter_list(self):
         parsed = False
         while True:
             next_token = self.next_token()
@@ -417,7 +427,7 @@ class JackParser:
             self.write_to_xml(NonTerminal('parameterList', False).form)
 
     # subroutineBody -> '{' varDec* statements '}'
-    def parse_subroutine_body(self):
+    def compile_subroutine_body(self):
         token = self.expect('symbol', ['{'])
 
         self.write_to_xml(NonTerminal('subroutineBody', True).form)
@@ -427,10 +437,10 @@ class JackParser:
 
         next_token = self.next_token()
         while next_token._type == 'keyword' and next_token.value in ['var']:
-            self.parse_var_desc()
+            self.compile_var_desc()
             next_token = self.next_token()
 
-        self.parse_statements()
+        self.compile_statements()
 
         token = self.expect('symbol', ['}'])
         self.write_to_xml(token.form)
@@ -439,7 +449,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('subroutineBody', False).form)
 
     # varDec -> 'var' type identifier (',' identifier)* ';'
-    def parse_var_desc(self):
+    def compile_var_desc(self):
         token = self.expect('keyword', ['var'])
 
         self.write_to_xml(NonTerminal('varDec', True).form)
@@ -482,41 +492,38 @@ class JackParser:
         self.write_to_xml(NonTerminal('varDec', False).form)
 
     # statements -> statement*
-    def parse_statements(self):
+    def compile_statements(self):
         next_token = self.next_token()
-        parsed = False
+
+        self.write_to_xml(NonTerminal('statements', True).form)
+        self.indent_level += 1
+
         while next_token._type == 'keyword' and next_token.value in ['let', 'if', 'while', 'do', 'return']:
-            if not parsed:
-                self.write_to_xml(NonTerminal('statements', True).form)
-                self.indent_level += 1
-
-                parsed = True
-
-            self.parse_statement()
+            self.compile_statement()
             next_token = self.next_token()
-        if parsed:
-            self.indent_level -= 1
-            self.write_to_xml(NonTerminal('statements', False).form)
+
+        self.indent_level -= 1
+        self.write_to_xml(NonTerminal('statements', False).form)
 
     # statement -> letStatement | ifStatement | whileStatement | doStatement | returnStatement
-    def parse_statement(self):
+    def compile_statement(self):
         next_token = self.next_token()
 
         if next_token.value == 'let':
-            self.parse_let_statement()
+            self.compile_let_statement()
         elif next_token.value == 'if':
-            self.parse_if_statement()
+            self.compile_if_statement()
         elif next_token.value == 'while':
-            self.parse_while_statement()
+            self.compile_while_statement()
         elif next_token.value == 'do':
-            self.parse_do_statement()
+            self.compile_do_statement()
         elif next_token.value == 'return':
-            self.parse_return_statement()
+            self.compile_return_statement()
         else:
             self.error("expect token ('keyword',') but got ")
 
     # letStatement -> 'let' identifier ('[' expression ']')? '=' expression ';'
-    def parse_let_statement(self):
+    def compile_let_statement(self):
         next_token = self.expect('keyword', ['let'])
 
         self.write_to_xml(NonTerminal('letStatement', True).form)
@@ -533,7 +540,7 @@ class JackParser:
                 self.write_to_xml(next_token.form)
                 self.advance()
 
-                self.parse_expression()
+                self.compile_expression()
 
                 next_token = self.expect('symbol', [']'])
                 self.write_to_xml(next_token.form)
@@ -546,7 +553,7 @@ class JackParser:
         next_token = self.expect('symbol', ['='])
         self.write_to_xml(next_token.form)
 
-        self.parse_expression()
+        self.compile_expression()
 
         next_token = self.expect('symbol', [';'])
         self.write_to_xml(next_token.form)
@@ -555,7 +562,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('letStatement', False).form)
 
     # ifStatement -> 'if' '(' expression ')' '{' statements '}'
-    def parse_if_statement(self):
+    def compile_if_statement(self):
         next_token = self.expect('keyword', ['if'])
 
         self.write_to_xml(NonTerminal('ifStatement', True).form)
@@ -566,7 +573,7 @@ class JackParser:
         next_token = self.expect('symbol', ['('])
         self.write_to_xml(next_token.form)
 
-        self.parse_expression()
+        self.compile_expression()
 
         next_token = self.expect('symbol', [')'])
         self.write_to_xml(next_token.form)
@@ -574,7 +581,7 @@ class JackParser:
         next_token = self.expect('symbol', ['{'])
         self.write_to_xml(next_token.form)
 
-        self.parse_statements()
+        self.compile_statements()
 
         next_token = self.expect('symbol', ['}'])
         self.write_to_xml(next_token.form)
@@ -587,7 +594,7 @@ class JackParser:
             next_token = self.expect('symbol', ['{'])
             self.write_to_xml(next_token.form)
 
-            self.parse_statements()
+            self.compile_statements()
 
             next_token = self.expect('symbol', ['}'])
             self.write_to_xml(next_token.form)
@@ -596,7 +603,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('ifStatement', False).form)
 
     # whileStatement -> 'while' '(' expression ')' '{' statements '}'
-    def parse_while_statement(self):
+    def compile_while_statement(self):
         next_token = self.expect('keyword', ['while'])
 
         self.write_to_xml(NonTerminal('whileStatement', True).form)
@@ -607,7 +614,7 @@ class JackParser:
         token = self.expect('symbol', ['('])
         self.write_to_xml(token.form)
 
-        self.parse_expression()
+        self.compile_expression()
 
         token = self.expect('symbol', [')'])
         self.write_to_xml(token.form)
@@ -615,7 +622,7 @@ class JackParser:
         token = self.expect('symbol', ['{'])
         self.write_to_xml(token.form)
 
-        self.parse_statements()
+        self.compile_statements()
 
         token = self.expect('symbol', ['}'])
         self.write_to_xml(token.form)
@@ -624,7 +631,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('whileStatement', False).form)
 
     # doStatement -> 'do' subroutineCall ';'
-    def parse_do_statement(self):
+    def compile_do_statement(self):
         next_token = self.expect('keyword', ['do'])
 
         self.write_to_xml(NonTerminal('doStatement', True).form)
@@ -647,7 +654,7 @@ class JackParser:
         next_token = self.expect('symbol', '(')
         self.write_to_xml(next_token.form)
 
-        self.parse_expression_list()
+        self.compile_expression_list()
 
         next_token = self.expect('symbol', ')')
         self.write_to_xml(next_token.form)
@@ -659,7 +666,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('doStatement', False).form)
 
     # returnStatement -> 'return' expression? ';'
-    def parse_return_statement(self):
+    def compile_return_statement(self):
         next_token = self.expect('keyword', ['return'])
 
         self.write_to_xml(NonTerminal('returnStatement', True).form)
@@ -672,7 +679,7 @@ class JackParser:
             if next_token._type == 'symbol' and next_token.value == ';':
                 break
             else:
-                self.parse_expression()
+                self.compile_expression()
                 next_token = self.next_token()
 
         next_token = self.expect('symbol', [';'])
@@ -682,7 +689,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('returnStatement', False).form)
 
     # expression -> term ( op term )*
-    def parse_expression(self):
+    def compile_expression(self):
         parsed = False
         next_token = self.next_token()
         if next_token._type in ['integerConstant', 'stringConstant'] or (
@@ -693,7 +700,7 @@ class JackParser:
                 self.write_to_xml(NonTerminal('expression', True).form)
                 self.indent_level += 1
                 parsed = True
-            self.parse_term()
+            self.compile_term()
 
         # op ->  '+' | '-' | '*' | '/' | '&' | '|' | '>' | '<' | '='
         next_token = self.next_token()
@@ -701,7 +708,7 @@ class JackParser:
             self.write_to_xml(next_token.form)
             self.advance()
 
-            self.parse_term()
+            self.compile_term()
             next_token = self.next_token()
 
         if parsed:
@@ -711,7 +718,7 @@ class JackParser:
     # term -> integerConstant | stringConstant | keywordConstant |
     #         identifier | identifier '['expression ']' | subroutineCall |
     #         '(' expression ')' | unaryOp term
-    def parse_term(self):
+    def compile_term(self):
         next_token = self.next_token()
         if next_token._type in ['integerConstant', 'stringConstant']:
             self.write_to_xml(NonTerminal('term', True).form)
@@ -741,7 +748,7 @@ class JackParser:
                     self.write_to_xml(next_token.form)
                     self.advance()
 
-                    self.parse_expression()
+                    self.compile_expression()
 
                     token = self.expect('symbol', ']')
                     self.write_to_xml(token.form)
@@ -755,7 +762,7 @@ class JackParser:
                     next_token = self.expect('symbol', '(')
                     self.write_to_xml(next_token.form)
 
-                    self.parse_expression_list()
+                    self.compile_expression_list()
 
                     next_token = self.expect('symbol', ')')
                     self.write_to_xml(next_token.form)
@@ -763,7 +770,7 @@ class JackParser:
                     self.write_to_xml(next_token.form)
                     self.advance()
 
-                    self.parse_expression_list()
+                    self.compile_expression_list()
 
                     next_token = self.expect('symbol', ')')
                     self.write_to_xml(next_token.form)
@@ -775,7 +782,7 @@ class JackParser:
             self.write_to_xml(next_token.form)
             self.advance()
 
-            self.parse_expression()
+            self.compile_expression()
 
             next_token = self.expect('symbol', [')'])
             self.write_to_xml(next_token.form)
@@ -786,7 +793,7 @@ class JackParser:
             self.write_to_xml(next_token.form)
             self.advance()
 
-            self.parse_term()
+            self.compile_term()
         else:
             self.error("expect a term production but got ...")
 
@@ -794,7 +801,7 @@ class JackParser:
         self.write_to_xml(NonTerminal('term', False).form)
 
     # expressionList -> (expression (',' expression)*)?
-    def parse_expression_list(self):
+    def compile_expression_list(self):
         parsed = False
         next_token = self.next_token()
         if next_token._type in ['integerConstant', 'stringConstant'] or (
@@ -806,7 +813,7 @@ class JackParser:
                 self.indent_level += 1
                 parsed = True
 
-            self.parse_expression()
+            self.compile_expression()
 
             # op ->  '+' | '-' | '*' | '/' | '&' | '|' | '>' | '<' | '='
             next_token = self.next_token()
@@ -815,7 +822,7 @@ class JackParser:
                     self.write_to_xml(next_token.form)
                     self.advance()
 
-                    self.parse_expression()
+                    self.compile_expression()
 
                 elif next_token._type == 'symbol' and next_token.value == ')':
                     break
@@ -840,7 +847,7 @@ if __name__ == '__main__':
 
     input = os.getcwd() + '/' + sys.argv[1]
     source_filenames = []
-    output_filename = ''
+    # output_filename = ''
     # 判断是否是目录，获取到所有后缀名为.jack的文件
     if os.path.isdir(input):
         if input.endswith('/'):
@@ -851,14 +858,14 @@ if __name__ == '__main__':
         if len(source_filenames) == 0:
             print('请输入正确的.jack文件名或目录')
             exit(1)
-        output_filename = input + '/' + os.path.basename(input) + ".vm"
+        # output_filename = input + '/' + os.path.basename(input) + ".vm"
     elif os.path.isfile(input) and input[-4:] == 'jack':
         source_filenames.append(input)
-        output_filename = os.path.dirname(input) + '/' + os.path.basename(input)[:-4] + 'vm'
+        # output_filename = os.path.dirname(input) + '/' + os.path.basename(input)[:-4] + 'vm'
     else:
         print('请输入正确的.jack文件名或目录')
         exit(1)
-    print("输出文件名为：", output_filename)
+    # print("输出文件名为：", output_filename)
 
-    parser = JackParser(output_filename, source_filenames)
-    parser.parse()
+    compiler = JackCompiler(source_filenames)
+    compiler.run()
